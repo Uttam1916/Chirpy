@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	auth "github.com/Uttam1916/chirpy/internal/authentication"
 	"github.com/Uttam1916/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -51,6 +52,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlderCreateChirps)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlderDisplayAllChirps)
 	mux.HandleFunc("GET /api/chirps/{chirp_id}", apiCfg.handlderDisplaychirp)
+	mux.HandleFunc("POST /api/login", apiCfg.handlderLogin)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -91,6 +93,7 @@ func CleanBody(line string) string {
 	}
 	return line
 }
+
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -98,7 +101,8 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type requestBody struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	type responseBody struct {
 		ID        string    `json:"id"`
@@ -108,14 +112,25 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req requestBody
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	user, err := cfg.db.CreateUser(r.Context(), req.Email)
+	hashedpass, err := auth.HashPassword(req.Password)
 	if err != nil {
-		http.Error(w, "could not create user", http.StatusInternalServerError)
+		http.Error(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashedpass,
+	})
+	if err != nil {
+		fmt.Println("CreateUser error:", err)
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}
 
@@ -125,6 +140,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
@@ -240,4 +256,57 @@ func (cfg *apiConfig) handlderDisplaychirp(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("content-type", "applicaton/json")
 	w.WriteHeader(200)
 	json.NewEncoder(w).Encode(chirp)
+}
+
+func (cfg *apiConfig) handlderLogin(w http.ResponseWriter, r *http.Request) {
+	type errorResp struct {
+		Error string `json:"error"`
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(errorResp{Error: "Method not allowed"})
+		return
+	}
+	type reqJson struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	var req reqJson
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&req)
+	if err != nil {
+		log.Printf("Error decoding JSON: %s", err)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(errorResp{Error: "Invalid JSON"})
+		return
+	}
+
+	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errorResp{Error: "Incorrect email or password"})
+		return
+	}
+
+	err = auth.CheckPasswordHash(req.Password, user.HashedPassword)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(errorResp{Error: "Incorrect email or password"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(struct {
+		ID        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
+
 }
