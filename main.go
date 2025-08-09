@@ -270,6 +270,7 @@ func (cfg *apiConfig) handlderLogin(w http.ResponseWriter, r *http.Request) {
 	type reqJson struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Expiry   string `json:"expires_in_seconds"`
 	}
 
 	var req reqJson
