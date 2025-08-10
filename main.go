@@ -16,12 +16,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	JWTSecret      string
 }
 
 func main() {
@@ -41,6 +43,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		db:             dbQueries,
 		platform:       os.Getenv(dbURL), // from .env
+		JWTSecret:      "MMTXxfVWgJWcgaVUGJ7sXqGfpZnqa5ac/DnZGGUFOWWBLmS3XcoNuB/d+mwAmrV0C+aU8IiV1qJXYU9GBU8D1g==",
 	}
 
 	mux := http.NewServeMux()
@@ -53,6 +56,7 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlderDisplayAllChirps)
 	mux.HandleFunc("GET /api/chirps/{chirp_id}", apiCfg.handlderDisplaychirp)
 	mux.HandleFunc("POST /api/login", apiCfg.handlderLogin)
+	mux.HandleFunc("PUT /api/users", apiCfg.HandlerUpdateUser)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -310,4 +314,61 @@ func (cfg *apiConfig) handlderLogin(w http.ResponseWriter, r *http.Request) {
 		Email:     user.Email,
 	})
 
+}
+
+func (apiCfg *apiConfig) HandlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type updateUserParams struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	// Get the access token from the request header
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "missing or malformed access token", http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token and get user ID
+	userID, err := auth.ValidateJWT(token, apiCfg.JWTSecret)
+	if err != nil {
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
+		return
+	}
+
+	// Decode request body
+	var params updateUserParams
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Hash new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(params.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// Update user in the database
+	updatedUser, err := apiCfg.db.UpdateUserbyID(r.Context(), database.UpdateUserbyIDParams{
+		ID:             userID,
+		Email:          params.Email,
+		HashedPassword: string(hashedPassword),
+	})
+	if err != nil {
+		http.Error(w, "failed to update user", http.StatusInternalServerError)
+		return
+	}
+
+	// Send updated user info without password
+	resp := struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}{
+		ID:    updatedUser.ID.String(),
+		Email: updatedUser.Email,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
